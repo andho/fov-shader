@@ -86,7 +86,7 @@ fn vision_cone_texture_setup(
     commands.insert_resource(FieldOfViewImage(image_handle))
 }
 
-#[derive(Component)]
+#[derive(Component, Default, Clone, Copy, ExtractComponent)]
 pub struct FovMarker;
 
 fn camera_setup(
@@ -131,7 +131,7 @@ fn fov_mesh_setup(
         MaterialMesh2dBundle {
             mesh: meshes.add(shape::Circle::new(50.).into()).into(),
             material: materials.add(ColorMaterial::from(Color::PURPLE)),
-            transform: Transform::from_translation(Vec3::new(-150., 0., 0.)),
+            transform: Transform::from_translation(Vec3::new(25., 0., 0.)),
             ..default()
         },
         first_pass_layer,
@@ -171,6 +171,7 @@ impl Plugin for FovPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             ExtractResourcePlugin::<FieldOfViewImage>::default(),
+            ExtractComponentPlugin::<FovMarker>::default(),
         ));
 
         let Ok(render_app) = app.get_sub_app_mut(RenderApp) else {
@@ -230,9 +231,9 @@ impl Node for PostProcessNode {
         world: &World,
     ) -> Result<(), NodeRunError> {
         let view_entity = graph_context.view_entity();
-        //let fov_image_handle = world.resource::<FieldOfViewImage>().0.clone();
-        //let gpu_images = world.resource::<RenderAssets<Image>>();
-        //let fov_image = &gpu_images[&fov_image_handle];
+        let fov_image_handle = world.resource::<FieldOfViewImage>().0.clone();
+        let gpu_images = world.resource::<RenderAssets<Image>>();
+        let fov_image = &gpu_images[&fov_image_handle];
 
         let Ok(view_target) = self.query.get_manual(world, view_entity) else {
             return Ok(());
@@ -266,22 +267,22 @@ impl Node for PostProcessNode {
                 ],
             });
 
-        //let fov_bind_group = render_context
-        //    .render_device()
-        //    .create_bind_group(&BindGroupDescriptor {
-        //        label: Some("post_process_bind_group"),
-        //        layout: &post_process_pipeline.fov_layout,
-        //        entries: &[
-        //            BindGroupEntry {
-        //                binding: 0,
-        //                resource: BindingResource::TextureView(&fov_image.texture_view),
-        //            },
-        //            BindGroupEntry {
-        //                binding: 1,
-        //                resource: BindingResource::Sampler(&fov_image.sampler),
-        //            },
-        //        ],
-        //    });
+        let fov_bind_group = render_context
+            .render_device()
+            .create_bind_group(&BindGroupDescriptor {
+                label: Some("post_process_bind_group"),
+                layout: &post_process_pipeline.fov_layout,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(&fov_image.texture_view),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Sampler(&fov_image.sampler),
+                    },
+                ],
+            });
 
         let mut render_pass = render_context.begin_tracked_render_pass(RenderPassDescriptor {
             label: Some("post_process_pass"),
@@ -295,7 +296,7 @@ impl Node for PostProcessNode {
 
         render_pass.set_render_pipeline(pipeline);
         render_pass.set_bind_group(0, &bind_group, &[]);
-        //render_pass.set_bind_group(1, &fov_bind_group, &[]);
+        render_pass.set_bind_group(1, &fov_bind_group, &[]);
         render_pass.draw(0..3, 0..1);
 
         Ok(())
@@ -305,7 +306,7 @@ impl Node for PostProcessNode {
 #[derive(Resource)]
 struct PostProcessPipeline {
     layout: BindGroupLayout,
-    //fov_layout: BindGroupLayout,
+    fov_layout: BindGroupLayout,
     sampler: Sampler,
     pipeline_id: CachedRenderPipelineId,
 }
@@ -336,27 +337,27 @@ impl FromWorld for PostProcessPipeline {
             ],
         });
 
-        //let fov_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        //    label: Some("fov_post_process_bind_group_layout"),
-        //    entries: &[
-        //        BindGroupLayoutEntry {
-        //            binding: 0,
-        //            visibility: ShaderStages::FRAGMENT,
-        //            ty: BindingType::Texture {
-        //                sample_type: TextureSampleType::Float { filterable: true },
-        //                view_dimension: TextureViewDimension::D2,
-        //                multisampled: false,
-        //            },
-        //            count: None,
-        //        },
-        //        BindGroupLayoutEntry {
-        //            binding: 1,
-        //            visibility: ShaderStages::FRAGMENT,
-        //            ty: BindingType::Sampler(SamplerBindingType::Filtering),
-        //            count: None,
-        //        },
-        //    ],
-        //});
+        let fov_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("fov_post_process_bind_group_layout"),
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
 
         let sampler = render_device.create_sampler(&SamplerDescriptor::default());
 
@@ -368,7 +369,7 @@ impl FromWorld for PostProcessPipeline {
             .resource_mut::<PipelineCache>()
             .queue_render_pipeline(RenderPipelineDescriptor {
                 label: Some("post_process_pipeline".into()),
-                layout: vec![layout.clone()],
+                layout: vec![layout.clone(), fov_layout.clone()],
                 vertex: fullscreen_shader_vertex_state(),
                 fragment: Some(FragmentState {
                     shader,
@@ -388,7 +389,7 @@ impl FromWorld for PostProcessPipeline {
 
         Self {
             layout,
-            //fov_layout,
+            fov_layout,
             sampler,
             pipeline_id,
         }
