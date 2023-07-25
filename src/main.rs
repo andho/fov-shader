@@ -1,7 +1,4 @@
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
-
 use bevy::{
-    asset::ChangeWatcher,
     core_pipeline::{
         clear_color::ClearColorConfig, core_2d,
         fullscreen_vertex_shader::fullscreen_shader_vertex_state,
@@ -9,7 +6,7 @@ use bevy::{
     prelude::*,
     render::{
         extract_component::{
-            ComponentUniforms, ExtractComponent, ExtractComponentPlugin, UniformComponentPlugin,
+            ExtractComponent, ExtractComponentPlugin,
         },
         render_graph::{Node, NodeRunError, RenderGraphApp, RenderGraphContext},
         render_resource::{
@@ -18,32 +15,28 @@ use bevy::{
             ColorTargetState, ColorWrites, FragmentState, MultisampleState, Operations,
             PipelineCache, PrimitiveState, RenderPassColorAttachment, RenderPassDescriptor,
             RenderPipelineDescriptor, Sampler, SamplerBindingType, SamplerDescriptor, ShaderStages,
-            ShaderType, TextureFormat, TextureSampleType, TextureViewDimension, Extent3d, TextureDescriptor, TextureDimension, TextureUsages, BlendState,
+            TextureFormat, TextureSampleType, TextureViewDimension, Extent3d, TextureDescriptor, TextureDimension, TextureUsages,
         },
         renderer::{RenderContext, RenderDevice},
         texture::BevyDefault,
         view::{ExtractedView, ViewTarget, RenderLayers},
         RenderApp, extract_resource::{ExtractResource, ExtractResourcePlugin}, camera::RenderTarget, render_asset::RenderAssets,
     },
-    utils::Duration, sprite::MaterialMesh2dBundle,
+    sprite::MaterialMesh2dBundle,
 };
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, FovPlugin))
+        .add_plugins((DefaultPlugins, FieldOfViewPlugin))
         .add_systems(Startup, (
             vision_cone_texture_setup,
             apply_deferred,
             camera_setup.after(vision_cone_texture_setup),
             fov_mesh_setup,
-            render_mesh,
+            setup_player,
         ).chain())
         .run();
 }
-
-// Entities with this component is rendered before main camera
-#[derive(Component)]
-struct FirstPassComponent;
 
 #[derive(Resource, Clone, Deref, ExtractResource)]
 struct FieldOfViewImage(Handle<Image>);
@@ -126,7 +119,6 @@ fn fov_mesh_setup(
 ) {
     let first_pass_layer = RenderLayers::layer(1);
 
-    // Circle
     commands.spawn((
         MaterialMesh2dBundle {
             mesh: meshes.add(shape::Circle::new(50.).into()).into(),
@@ -138,36 +130,24 @@ fn fov_mesh_setup(
     ));
 }
 
-fn render_mesh(
+fn setup_player(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    fov_image: Res<FieldOfViewImage>,
 ) {
-
-    // Quad
-    //commands.spawn((
-    //    SpriteBundle {
-    //        texture: fov_image.0.clone(),
-    //        transform: Transform::from_translation(Vec3::new(-100., 1., 1.)),
-    //        ..Default::default()
-    //    },
-    //));
-
-    // Quad
     commands.spawn(MaterialMesh2dBundle {
         mesh: meshes
-            .add(shape::Quad::new(Vec2::new(50., 100.)).into())
+            .add(shape::Quad::new(Vec2::new(50., 50.)).into())
             .into(),
         material: materials.add(ColorMaterial::from(Color::LIME_GREEN)),
-        transform: Transform::from_translation(Vec3::new(50., 0., 2.)),
+        transform: Transform::from_translation(Vec3::new(0., 0., 1.)),
         ..default()
     });
 }
 
-struct FovPlugin;
+struct FieldOfViewPlugin;
 
-impl Plugin for FovPlugin {
+impl Plugin for FieldOfViewPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             ExtractResourcePlugin::<FieldOfViewImage>::default(),
@@ -179,15 +159,15 @@ impl Plugin for FovPlugin {
         };
 
         render_app
-            .add_render_graph_node::<PostProcessNode>(
+            .add_render_graph_node::<FieldOfViewNode>(
                 core_2d::graph::NAME,
-                PostProcessNode::NAME,
+                FieldOfViewNode::NAME,
             )
             .add_render_graph_edges(
                 core_2d::graph::NAME,
                 &[
                     core_2d::graph::node::TONEMAPPING,
-                    PostProcessNode::NAME,
+                    FieldOfViewNode::NAME,
                     core_2d::graph::node::END_MAIN_PASS_POST_PROCESSING,
                 ],
             );
@@ -199,19 +179,19 @@ impl Plugin for FovPlugin {
         };
 
         render_app
-            .init_resource::<PostProcessPipeline>();
+            .init_resource::<FieldOfViewPipeline>();
     }
 }
 
-struct PostProcessNode {
+struct FieldOfViewNode {
     query: QueryState<&'static ViewTarget, (With<ExtractedView>, With<FovMarker>)>,
 }
 
-impl PostProcessNode {
-    pub const NAME: &str = "post_process";
+impl FieldOfViewNode {
+    pub const NAME: &str = "fov_render";
 }
 
-impl FromWorld for PostProcessNode {
+impl FromWorld for FieldOfViewNode {
     fn from_world(world: &mut World) -> Self {
         Self {
             query: QueryState::new(world),
@@ -219,7 +199,7 @@ impl FromWorld for PostProcessNode {
     }
 }
 
-impl Node for PostProcessNode {
+impl Node for FieldOfViewNode {
     fn update(&mut self, world: &mut World) {
         self.query.update_archetypes(world);
     }
@@ -239,7 +219,7 @@ impl Node for PostProcessNode {
             return Ok(());
         };
 
-        let post_process_pipeline = world.resource::<PostProcessPipeline>();
+        let post_process_pipeline = world.resource::<FieldOfViewPipeline>();
 
         let pipeline_cache = world.resource::<PipelineCache>();
 
@@ -270,7 +250,7 @@ impl Node for PostProcessNode {
         let fov_bind_group = render_context
             .render_device()
             .create_bind_group(&BindGroupDescriptor {
-                label: Some("post_process_bind_group"),
+                label: Some("fov_texture_bind_group"),
                 layout: &post_process_pipeline.fov_layout,
                 entries: &[
                     BindGroupEntry {
@@ -285,7 +265,7 @@ impl Node for PostProcessNode {
             });
 
         let mut render_pass = render_context.begin_tracked_render_pass(RenderPassDescriptor {
-            label: Some("post_process_pass"),
+            label: Some("fov_pass"),
             color_attachments: &[Some(RenderPassColorAttachment {
                 view: post_process.destination,
                 resolve_target: None,
@@ -304,19 +284,19 @@ impl Node for PostProcessNode {
 }
 
 #[derive(Resource)]
-struct PostProcessPipeline {
+struct FieldOfViewPipeline {
     layout: BindGroupLayout,
     fov_layout: BindGroupLayout,
     sampler: Sampler,
     pipeline_id: CachedRenderPipelineId,
 }
 
-impl FromWorld for PostProcessPipeline {
+impl FromWorld for FieldOfViewPipeline {
     fn from_world(world: &mut World) -> Self {
         let render_device = world.resource::<RenderDevice>();
 
         let layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("post_process_bind_group_layout"),
+            label: Some("fov_view_bind_group_layout"),
             entries: &[
                 BindGroupLayoutEntry {
                     binding: 0,
@@ -338,7 +318,7 @@ impl FromWorld for PostProcessPipeline {
         });
 
         let fov_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("fov_post_process_bind_group_layout"),
+            label: Some("fov_texture_bind_group_layout"),
             entries: &[
                 BindGroupLayoutEntry {
                     binding: 0,
@@ -363,12 +343,12 @@ impl FromWorld for PostProcessPipeline {
 
         let shader = world
             .resource::<AssetServer>()
-            .load("shaders/post_processing.wgsl");
+            .load("shaders/fov.wgsl");
 
         let pipeline_id = world
             .resource_mut::<PipelineCache>()
             .queue_render_pipeline(RenderPipelineDescriptor {
-                label: Some("post_process_pipeline".into()),
+                label: Some("fov_pipeline".into()),
                 layout: vec![layout.clone(), fov_layout.clone()],
                 vertex: fullscreen_shader_vertex_state(),
                 fragment: Some(FragmentState {
